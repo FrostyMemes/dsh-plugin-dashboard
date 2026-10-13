@@ -1,0 +1,3 @@
+- insert:
+    - id: agent-control-center
+      name: dsh-agent-control-center
