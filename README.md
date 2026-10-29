@@ -1,6 +1,8 @@
 # DSH Agent Control Center
 
-Read-only browser dashboard Bundle for DeepSeek Harness Desktop `0.2.0-rc.2`.
+Read-only browser dashboard Bundle for DeepSeek Harness Desktop (plugin `0.1.2`).
+
+The manifest accepts any Harness version, including prereleases (`engines.dsh: "*"`, unrestricted peer requirements). Development dependencies stay pinned to the tested Harness `0.2.1-rc.2` packages. Installation is not blocked solely by a runtime version change; API compatibility with other versions is unverified.
 
 ## Development
 

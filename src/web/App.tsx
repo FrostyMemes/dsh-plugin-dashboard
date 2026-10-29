@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { orderAgents } from './agent-order.mjs';
 
 const API = '/dsh-agent-control-center/api';
 type MetricValue = number | null | undefined;
@@ -7,9 +8,11 @@ type Agent = {
   id: string;
   parentId: string | null;
   name: string;
+  title: string | null;
   status: 'idle' | 'running' | 'unknown';
   task: string;
   model: string | null;
+  runningOrder: number | null;
   metrics: {
     context: { used: MetricValue; capacity: MetricValue; estimated: boolean };
     tokens: TokenValues;
@@ -61,6 +64,16 @@ function completenessText(value: Snapshot['completeness'] | undefined) {
   return value.replace(/_/g, ' ');
 }
 
+function shortSessionId(id: string) {
+  return id.length > 19 ? `${id.slice(0, 8)}…${id.slice(-8)}` : id;
+}
+
+function displayName(agent: Agent) {
+  if (agent.title?.trim()) return agent.title;
+  if (agent.name && agent.name !== agent.id) return agent.name;
+  return shortSessionId(agent.id);
+}
+
 function StatusPill({ status }: { status?: string | null }) {
   const normalized = typeof status === 'string' ? status.toLowerCase() : 'unknown';
   const known = ['running', 'idle', 'not_loaded', 'unknown', 'disconnected'].includes(normalized);
@@ -104,7 +117,7 @@ function TokenMetrics({ tokens }: { tokens?: TokenValues }) {
 
 function AgentCard({ agent, onDetails }: { agent: Agent; onDetails: () => void }) {
   const metrics = agent.metrics || {};
-  const identity = agent.name || agent.id || 'Unnamed agent';
+  const identity = displayName(agent) || 'Unnamed agent';
   const kind = agent.parentId ? 'Subagent' : 'Root agent';
   return (
     <article className="agent-card">
@@ -113,7 +126,7 @@ function AgentCard({ agent, onDetails }: { agent: Agent; onDetails: () => void }
         <div className="min-width-zero"><h2 title={identity}>{identity}</h2><p className="agent-id" title={agent.id || ''}>{agent.id || 'ID unavailable'}</p></div>
         <button className="icon-button" title="Copy agent ID" aria-label="Copy agent ID" onClick={() => { void navigator.clipboard?.writeText(agent.id); }}>⧉</button>
       </div>
-      <div className="identity-meta"><span>Model</span><strong>{agent.model || 'Unavailable'}</strong></div>
+      <div className="identity-meta"><span>Last active model</span><strong>{agent.model || 'Unavailable'}</strong></div>
       <div className="task-box"><span className="eyebrow">Current task</span><p>{agent.task || 'Task unavailable'}</p></div>
       <MetricBar label="Context" used={metrics.context?.used} capacity={metrics.context?.capacity} estimated={metrics.context?.estimated} />
       <TokenMetrics tokens={metrics.tokens} />
@@ -136,11 +149,11 @@ function DetailsPanel({ agent, agents, onClose }: { agent: Agent | null; agents:
   const children = agents.filter(item => item.parentId === agent.id);
   return <div className="scrim" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <aside className="details-panel" aria-label="Agent details">
-      <div className="panel-heading"><div><span className="eyebrow">Agent details</span><h2>{agent.name || 'Unnamed agent'}</h2></div><button className="icon-button close-button" aria-label="Close details" onClick={onClose}>×</button></div>
+      <div className="panel-heading"><div><span className="eyebrow">Agent details</span><h2>{displayName(agent) || 'Unnamed agent'}</h2></div><button className="icon-button close-button" aria-label="Close details" onClick={onClose}>×</button></div>
       <StatusPill status={agent.status} />
-      <section className="detail-section"><h3>Overview</h3><dl><dt>ID</dt><dd>{agent.id || 'Unavailable'}</dd><dt>Parent ID</dt><dd>{agent.parentId || 'None reported'}</dd><dt>Type</dt><dd>{agent.parentId ? 'Subagent' : 'Root agent'}</dd><dt>Model</dt><dd>{agent.model || 'Unavailable'}</dd><dt>Current task</dt><dd>{agent.task || 'Unavailable'}</dd><dt>Duration</dt><dd>{formatDuration(agent.metrics?.durationMs)}</dd></dl></section>
+      <section className="detail-section"><h3>Overview</h3><dl><dt>Session title</dt><dd>{agent.title || 'Unavailable'}</dd><dt>ID</dt><dd>{agent.id || 'Unavailable'}</dd><dt>Parent ID</dt><dd>{agent.parentId || 'None reported'}</dd><dt>Type</dt><dd>{agent.parentId ? 'Subagent' : 'Root agent'}</dd><dt>Last active model</dt><dd>{agent.model || 'Unavailable'}</dd><dt>Current task</dt><dd>{agent.task || 'Unavailable'}</dd><dt>Duration</dt><dd>{formatDuration(agent.metrics?.durationMs)}</dd></dl></section>
       <section className="detail-section"><h3>Context &amp; tokens</h3><MetricBar label="Context" used={agent.metrics?.context?.used} capacity={agent.metrics?.context?.capacity} estimated={agent.metrics?.context?.estimated} /><TokenMetrics tokens={agent.metrics?.tokens} /></section>
-      <section className="detail-section"><h3>Observed direct children <span className="section-count">{children.length}</span></h3>{children.length ? <ul className="child-list">{children.map(child => <li key={child.id}><span>{child.name || child.id || 'Unnamed agent'}</span><StatusPill status={child.status} /></li>)}</ul> : <p className="muted-copy">No direct children are present in this snapshot.</p>}</section>
+      <section className="detail-section"><h3>Observed direct children <span className="section-count">{children.length}</span></h3>{children.length ? <ul className="child-list">{children.map(child => <li key={child.id}><span>{displayName(child) || 'Unnamed agent'}</span><StatusPill status={child.status} /></li>)}</ul> : <p className="muted-copy">No direct children are present in this snapshot.</p>}</section>
       <section className="detail-section"><h3>Source diagnostics</h3><Diagnostics diagnostics={agent.sourceDiagnostics} /></section>
     </aside>
   </div>;
@@ -159,7 +172,7 @@ function TreeView({ agents, observed, onSelect }: { agents: Agent[]; observed: b
     if (seen.has(agent.id)) return null;
     const nextSeen = new Set(seen).add(agent.id);
     return <li key={agent.id || agent.name}>
-      <button className="tree-node" onClick={() => onSelect(agent)}><span className="tree-name">{agent.name || agent.id || 'Unnamed agent'}</span><span className="tree-id">{agent.id || 'ID unavailable'}</span><StatusPill status={agent.status} /></button>
+      <button className="tree-node" onClick={() => onSelect(agent)}><span className="tree-name">{displayName(agent) || 'Unnamed agent'}</span><span className="tree-id">{agent.id || 'ID unavailable'}</span><StatusPill status={agent.status} /></button>
       {(byParent.get(agent.id) || []).length > 0 && <ul>{(byParent.get(agent.id) || []).map(child => renderNode(child, nextSeen))}</ul>}
     </li>;
   };
@@ -281,12 +294,12 @@ function App() {
     } catch (error) { setPairError(error instanceof Error ? error.message : 'Pairing failed.'); }
   }
 
-  const filtered = useMemo(() => agents.filter(agent => {
-    const haystack = `${agent.name || ''} ${agent.id || ''} ${agent.task || ''} ${agent.model || ''}`.toLowerCase();
+  const filtered = useMemo(() => orderAgents(agents.filter(agent => {
+    const haystack = `${agent.title || ''} ${agent.name || ''} ${agent.id || ''} ${agent.task || ''} ${agent.model || ''}`.toLowerCase();
     return (!query || haystack.includes(query.toLowerCase()))
       && (statusFilter === 'all' || agent.status === statusFilter)
       && (typeFilter === 'all' || (typeFilter === 'root' ? !agent.parentId : Boolean(agent.parentId)));
-  }), [agents, query, statusFilter, typeFilter]);
+  })), [agents, query, statusFilter, typeFilter]);
 
   const totalTokens = agents.reduce((sum, agent) => {
     const tokens = agent.metrics?.tokens;

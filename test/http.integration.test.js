@@ -37,6 +37,7 @@ test('dashboard routes serve, pair, authorize snapshots, guard authorities, and 
   let activeSubscriptions = 0;
   let unsubscribeCalls = 0;
   const collector = {
+    refresh: async () => {},
     snapshot: () => snapshot,
     subscribe(listener) {
       activeSubscriptions += 1;
@@ -194,6 +195,65 @@ test('dashboard routes serve, pair, authorize snapshots, guard authorities, and 
     assert.equal(activeSubscriptions, 0);
   } finally {
     sseRequest?.destroy();
+    unregister();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('SSE disconnect during catalog refresh releases the listener before refresh completes', async () => {
+  let route;
+  let authority = '';
+  let resolveRefresh;
+  let resolveSubscribed;
+  const subscribed = new Promise(resolve => { resolveSubscribed = resolve; });
+  let activeSubscriptions = 0;
+  const collector = {
+    refresh: () => new Promise(resolve => { resolveRefresh = resolve; }),
+    snapshot: () => snapshot,
+    subscribe() {
+      activeSubscriptions += 1;
+      resolveSubscribed();
+      return () => { activeSubscriptions -= 1; };
+    },
+  };
+  const pairing = createPairingStore({ secret: authoritySecret });
+  const webServer = { register(value) { route = value; return () => { route = undefined; }; } };
+  const unregister = registerDashboardRoutes({ webServer, collector, pairing, getAuthority: () => authority });
+  const server = createServer((req, res) => {
+    if (route && req.url?.startsWith(route.path)) route.handler(req, res);
+    else { res.writeHead(404); res.end(); }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  authority = `127.0.0.1:${address.port}`;
+  const request = httpRequest({
+    host: '127.0.0.1',
+    port: address.port,
+    path: `${basePath}/api/events`,
+    headers: { cookie: `dsh_agent_control_center=${pairing.createCookie(authority)}` },
+  });
+  request.on('error', () => {});
+  request.end();
+  try {
+    await subscribed;
+    request.destroy();
+    await new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error('SSE listener was not released after client disconnect')), 1000);
+      const check = () => {
+        if (activeSubscriptions === 0) { clearTimeout(deadline); resolve(); }
+        else setTimeout(check, 5);
+      };
+      check();
+    });
+    resolveRefresh();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(activeSubscriptions, 0);
+  } finally {
+    resolveRefresh?.();
     unregister();
     await new Promise(resolve => server.close(resolve));
   }

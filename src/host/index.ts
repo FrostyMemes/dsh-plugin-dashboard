@@ -21,7 +21,7 @@ function getValidSecret(record: unknown): string | undefined {
 }
 
 export class DashboardHost extends TypertRemoteService {
-  static inject = ['agents', 'sessionProjections', 'subagents', 'webServer', 'credentials'];
+  static inject = ['agents', 'sessionProjections', 'subagents', 'sessionQuery', 'webServer', 'credentials', 'workspaceRegistry'];
 
   private pairing: ReturnType<typeof createPairingStore> | undefined;
   private collector: ReturnType<typeof createCollector>;
@@ -34,7 +34,8 @@ export class DashboardHost extends TypertRemoteService {
   }
 
   async [Service.init](): Promise<void> {
-    if (this.ctx.webServer.host !== '127.0.0.1' || !Number.isSafeInteger(this.ctx.webServer.port) || this.ctx.webServer.port < 1) {
+    const port = this.ctx.webServer.port;
+    if (this.ctx.webServer.host !== '127.0.0.1' || typeof port !== 'number' || !Number.isSafeInteger(port) || port < 1) {
       throw new Error('Agent Control Center requires the Host web server to bind to 127.0.0.1 on an active port.');
     }
     this.pairing = await loadPairingStore(this.ctx);

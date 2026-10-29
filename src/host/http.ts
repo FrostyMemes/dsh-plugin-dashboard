@@ -3,7 +3,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver';
-import type { createCollector } from './collector.js';
+import type { CollectorEvent, createCollector } from './collector.js';
 import { parseRequestBody, readCookie, requestAuthority } from './security.js';
 
 const BASE = '/dsh-agent-control-center';
@@ -87,6 +87,7 @@ export function registerDashboardRoutes({ webServer, collector, pairing, getAuth
 
     if (path === `${BASE}/api/snapshot` && req.method === 'GET') {
       if (!isAuthorized(req, pairing, authority)) return sendJson(res, 401, { error: 'unauthorized' });
+      await collector.refresh();
       return sendJson(res, 200, collector.snapshot());
     }
 
@@ -100,22 +101,40 @@ export function registerDashboardRoutes({ webServer, collector, pairing, getAuth
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
       });
-      res.write(`event: snapshot\ndata: ${JSON.stringify(collector.snapshot())}\n\n`);
-      const unsubscribe = collector.subscribe(event => {
-        const eventName = 'removedId' in event ? 'remove' : 'update';
-        res.write(`event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`);
-      });
-      const heartbeat = setInterval(() => res.write(`event: heartbeat\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`), 15_000);
-      streams.add(res);
+      const pendingEvents: CollectorEvent[] = [];
+      let initialized = false;
       let cleaned = false;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      const unsubscribe = collector.subscribe(event => {
+        if (cleaned) return;
+        if (!initialized) {
+          pendingEvents.push(event);
+          return;
+        }
+        writeCollectorEvent(event);
+      });
+      streams.add(res);
       const cleanup = () => {
         if (cleaned) return;
         cleaned = true;
-        clearInterval(heartbeat);
+        if (heartbeat) clearInterval(heartbeat);
         unsubscribe();
         streams.delete(res);
       };
       res.on('close', cleanup);
+      res.on('error', cleanup);
+      await collector.refresh();
+      if (disposed || cleaned || res.destroyed || res.writableEnded) {
+        cleanup();
+        return;
+      }
+      const snapshot = collector.snapshot();
+      res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
+      initialized = true;
+      for (const event of pendingEvents) if (event.revision > snapshot.revision) writeCollectorEvent(event);
+      heartbeat = setInterval(() => {
+        if (!cleaned && !res.destroyed && !res.writableEnded) res.write(`event: heartbeat\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`);
+      }, 15_000);
       return;
     }
 
@@ -126,6 +145,11 @@ export function registerDashboardRoutes({ webServer, collector, pairing, getAuth
     }
 
     return serveStatic(req, res, path);
+
+    function writeCollectorEvent(event: CollectorEvent): void {
+      const eventName = 'removedId' in event ? 'remove' : 'update';
+      res.write(`event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`);
+    }
   }
 }
 
